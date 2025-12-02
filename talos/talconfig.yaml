@@ -1,0 +1,127 @@
+# Template file
+# https://github.com/budimanjojo/talhelper/blob/master/example/talconfig.yaml
+clusterName: rwcloud
+talosVersion: v1.11.5
+kubernetesVersion: v1.33.6
+endpoint: https://192.168.0.230:6443
+# enable workers on your control plane nodes
+allowSchedulingOnControlPlanes: true
+clusterPodNets:
+  - 10.42.0.0/16
+  - 2001:db8:42::/56
+clusterSvcNets:
+  - 10.43.0.0/16
+  - 2001:db8:43::/112
+# patches:
+#   - |-
+#     # Patches go here
+
+nodes:
+  - hostname: master01
+    controlPlane: true
+    ipAddress: 192.168.0.196
+    installDisk: /dev/sda
+    nameservers:
+      - 192.168.0.1
+    machineSpec:
+      mode: nocloud
+      arch: amd64
+    schematic:      
+      customization:        
+        systemExtensions:
+          officialExtensions:
+            - siderolabs/qemu-guest-agent            
+    # Set up the control plane nodes to provide a vip for the kubernetes api server
+    # Documentation @ https://www.talos.dev/v1.9/talos-guides/network/vip/
+    # Default setup is to use predictable interface names: https://www.talos.dev/v1.9/talos-guides/network/predictable-interface-names/
+    # Different devices might need a different interface name: https://www.talos.dev/v1.9/talos-guides/network/device-selector/
+    networkInterfaces:
+      - interface: eth0
+        dhcp: true
+        vip:
+          ip: 192.168.0.230
+  - hostname: master02
+    controlPlane: true
+    ipAddress: 192.168.0.100  
+    installDisk: /dev/sda
+    nameservers:
+      - 192.168.0.1
+    machineSpec:
+      mode: metal
+      arch: amd64
+    schematic:      
+      customization:        
+        systemExtensions:
+          officialExtensions:
+            - siderolabs/iscsi-tools
+            - siderolabs/util-linux-tools   
+    userVolumes: &user-volumes
+      - name: longhorn
+        provisioning:
+          diskSelector:
+            match: disk.transport == "usb"
+          minSize: 100GB
+          grow: true
+    volumes: &volumes
+      - name: EPHEMERAL
+        provisioning:
+          diskSelector:
+            match: disk.transport == "usb"
+          minSize: 50GiB
+          maxSize: 50GiB  
+    # Set up the control plane nodes to provide a vip for the kubernetes api server
+    # Documentation @ https://www.talos.dev/v1.9/talos-guides/network/vip/
+    # Default setup is to use predictable interface names: https://www.talos.dev/v1.9/talos-guides/network/predictable-interface-names/
+    # Different devices might need a different interface name: https://www.talos.dev/v1.9/talos-guides/network/device-selector/
+    networkInterfaces:
+      - interface: eth0
+        dhcp: true
+        vip:
+          ip: 192.168.0.230
+    patches:
+      - "@./patches/sysctl.yaml"
+
+  - hostname: master03
+    controlPlane: true
+    ipAddress: 192.168.0.101
+    machine:
+      sysctls:
+        net.ipv6.conf.all.accept_ra: "2"
+        net.ipv6.conf.default.accept_ra: "2"
+    installDisk: /dev/sda
+    nameservers:
+      - 192.168.0.1
+    machineSpec:
+      mode: metal
+      arch: amd64
+    schematic:      
+      customization:        
+        systemExtensions:
+          officialExtensions:
+            - siderolabs/iscsi-tools
+            - siderolabs/util-linux-tools   
+    userVolumes: &user-volumes
+      - name: longhorn
+        provisioning:
+          diskSelector:
+            match: disk.transport == "usb"
+          minSize: 100GB
+          grow: true
+    volumes: &volumes
+      - name: EPHEMERAL
+        provisioning:
+          diskSelector:
+            match: disk.transport == "usb"
+          minSize: 50GiB
+          maxSize: 50GiB  
+    # Set up the control plane nodes to provide a vip for the kubernetes api server
+    # Documentation @ https://www.talos.dev/v1.9/talos-guides/network/vip/
+    # Default setup is to use predictable interface names: https://www.talos.dev/v1.9/talos-guides/network/predictable-interface-names/
+    # Different devices might need a different interface name: https://www.talos.dev/v1.9/talos-guides/network/device-selector/
+    networkInterfaces:
+      - interface: eth0
+        dhcp: true
+        vip:
+          ip: 192.168.0.230
+    patches:
+      - "@./patches/sysctl.yaml"
