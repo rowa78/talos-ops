@@ -1,0 +1,15 @@
+# SOPS-verschlüsselte Dateien
+*.sops.yaml diff=sopsdiffer
+*.sops.yml diff=sopsdiffer
+
+# YAML-Dateien
+*.yaml text eol=lf
+*.yml text eol=lf
+
+# Shell-Skripte
+*.sh text eol=lf
+
+# Taskfiles
+Taskfile.yaml text eol=lf
+**/Taskfile.yaml text eol=lf
+

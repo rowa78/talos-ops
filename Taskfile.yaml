@@ -1,0 +1,81 @@
+---
+version: "3"
+
+set:
+  - pipefail
+shopt:
+  - globstar
+
+vars:
+  SOPS_CONFIG_FILE: '{{.ROOT_DIR}}/.sops.yaml'
+  TALOS_DIR: '{{.ROOT_DIR}}/talos'
+  TALHELPER_CLUSTER_DIR: '{{.TALOS_DIR}}/clusterconfig'
+  TALOSCONFIG: '{{.TALHELPER_CLUSTER_DIR}}/talosconfig'
+  TALOS_CLUSTER_NAME:
+    sh: yq '.clusterName' < '{{.TALOS_DIR}}/talconfig.yaml'
+
+env:
+  KUBECONFIG: '{{.ROOT_DIR}}/kubeconfig'
+  SOPS_AGE_KEY_FILE: '{{.SOPS_AGE_KEY_FILE}}'
+  TALOSCONFIG: '{{.TALOSCONFIG}}'
+
+includes:
+  talos: .taskfiles/talos
+  talos:helper: .taskfiles/talos-helper
+
+tasks:
+  default:
+    desc: Zeigt alle verfügbaren Tasks an
+    cmds:
+      - task --list
+
+  validate:tools:
+    desc: Prüft, ob alle benötigten Tools installiert sind
+    cmds:
+      - |
+        echo "Prüfe Tools..."
+        for tool in talosctl talhelper sops kubectl yq jq; do
+          if ! command -v $tool &> /dev/null; then
+            echo "❌ $tool ist nicht installiert"
+            exit 1
+          else
+            echo "✅ $tool gefunden"
+          fi
+        done
+        echo "✅ Alle Tools sind installiert"
+
+  validate:config:
+    desc: Validiert alle Konfigurationsdateien
+    preconditions:
+      - test -f {{.TALOS_DIR}}/talconfig.yaml
+      - test -f {{.TALOS_DIR}}/talenv.yaml
+      - which yq talhelper
+    cmds:
+      - yq eval '.' {{.TALOS_DIR}}/talconfig.yaml > /dev/null && echo "✅ talconfig.yaml ist gültig"
+      - yq eval '.' {{.TALOS_DIR}}/talenv.yaml > /dev/null && echo "✅ talenv.yaml ist gültig"
+      - |
+        if [ -f {{.TALOS_DIR}}/talsecret.sops.yaml ]; then
+          sops -d {{.TALOS_DIR}}/talsecret.sops.yaml > /dev/null && echo "✅ talsecret.sops.yaml ist gültig"
+        else
+          echo "⚠️  talsecret.sops.yaml existiert nicht (wird beim ersten Bootstrap erstellt)"
+        fi
+
+  info:versions:
+    desc: Zeigt verwendete Talos und Kubernetes Versionen
+    preconditions:
+      - test -f {{.TALOS_DIR}}/talenv.yaml
+      - which yq
+    cmds:
+      - |
+        echo "📦 Versionen:"
+        echo "  Talos:     $(yq '.talosVersion' {{.TALOS_DIR}}/talenv.yaml)"
+        echo "  Kubernetes: $(yq '.kubernetesVersion' {{.TALOS_DIR}}/talenv.yaml)"
+
+  clean:generated:
+    desc: Entfernt generierte Dateien (kubeconfig, clusterconfig)
+    prompt: Dies entfernt alle generierten Dateien. Fortfahren?
+    cmds:
+      - rm -f {{.ROOT_DIR}}/kubeconfig
+      - rm -f {{.TALOSCONFIG}}
+      - rm -f {{.TALHELPER_CLUSTER_DIR}}/*.yaml
+      - echo "✅ Generierte Dateien entfernt"

@@ -2,3 +2,5 @@ rwcloud-master01.yaml
 rwcloud-master02.yaml
 rwcloud-master03.yaml
 talosconfig
+rwcloud-pi-worker01.yaml
+rwcloud-vm-worker01.yaml

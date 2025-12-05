@@ -1,0 +1,6 @@
+---
+machine:
+  sysctls:
+    net.ipv6.conf.all.accept_ra: 2
+    net.ipv6.conf.end0.accept_ra: 2
+    net.ipv6.conf.all.forwarding: 1

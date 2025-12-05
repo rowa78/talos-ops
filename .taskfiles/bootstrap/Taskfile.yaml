@@ -1,0 +1,135 @@
+---
+version: "3"
+
+tasks:
+  talos:
+    desc: Bootstrap the Talos cluster.
+    dir: '{{.TALOS_DIR}}'
+    vars:
+      TALOS_CONTROLLER:
+        sh: talosctl config info --output json | jq --raw-output '.endpoints[]' | shuf -n 1
+    preconditions:
+      - which talhelper sops jq
+      - test -f {{.SOPS_CONFIG_FILE}}
+      - test -f {{.SOPS_AGE_KEY_FILE}}
+      - test -f {{.TALOS_DIR}}/talconfig.yaml
+      - talosctl config info
+    cmds:
+      - # Enusre talos secrets are present.
+        task: talhelper:secret
+      - # Generate up-to-date config.
+        task: :talos:talhelper:generate-config
+      - cmd: until talosctl get systeminformations.hardware.talos.dev -i -n {{.TALOS_CONTROLLER}} -o yaml; do sleep 5; done
+      - # Apply config
+        talhelper gencommand apply --extra-flags="--insecure" | bash
+      # Bootstrap
+      - cmd: until talhelper gencommand bootstrap | bash; do sleep 5; done
+      - task: :talos:talhelper:kubeconfig
+
+  kubectl:target-node:
+    internal: true
+    preconditions:
+      - which kubectl talosctl jq
+      - test -f $KUBECONFIG
+    vars:
+      TALOS_CONTROLLER:
+        sh: talosctl config info --output json | jq --raw-output '.endpoints[]' | shuf -n 1
+      CLUSTER_NAME:
+        sh: talosctl config info --output json | jq --raw-output '.context'
+    cmd: kubectl config set-cluster {{ .CLUSTER_NAME }} --server "https://{{ .TALOS_CONTROLLER }}:6443"
+
+  kubectl:target-cilium:
+    internal: true
+    preconditions:
+      - which kubectl talosctl jq
+      - test -f $KUBECONFIG
+      - test -f '{{.TALOS_DIR}}/talconfig.yaml'
+    vars:
+      CLUSTER_NAME:
+        sh: talosctl config info --output json | jq --raw-output '.context'
+      ENDPOINT:
+        sh: yq '.endpoint' < '{{.TALOS_DIR}}/talconfig.yaml'
+    cmd: kubectl config set-cluster {{ .CLUSTER_NAME }} --server "{{ .ENDPOINT }}"
+
+  helm:critical:
+    desc: Bootstrap network.
+    vars:
+      helm_file: '{{ .TALOS_DIR }}/bootstrap/helmfile.d/00-critical.yaml'
+      TALOS_CONTROLLER:
+        sh: talosctl config info --output json | jq --raw-output '.endpoints[]' | shuf -n 1
+    env:
+      INFRA_DIR: '{{ .ROOT_DIR }}/cluster/infra'
+      NODE_COUNT:
+        sh: talosctl config info --output json | jq --raw-output '.nodes | length'
+    preconditions:
+      - which sops helmfile kubectl talosctl
+      - test -f {{ .helm_file }}
+      - talosctl config info
+    interactive: true
+    cmds:
+      - # Use a node as an endpoint
+        task: kubectl:target-node
+      - cmd: until kubectl wait nodes --for=condition=Ready=False --all --timeout=10m; do sleep 5; done
+      - # Create the namespace.
+        cmd: kubectl create namespace flux-system --dry-run=client -o yaml | kubectl apply -f -
+      - # Apply configurations.
+        cmd: 'kubectl --namespace flux-system apply --server-side --filename {{ .CLUSTER_DIR }}/{{ .ITEM }}'
+        for:
+          - 'components/namespace/substituteFrom/cluster-settings.yaml'
+      - # Apply secrets.
+        cmd: sops exec-file {{ .CLUSTER_DIR }}/{{ .ITEM }} "kubectl --namespace flux-system apply --server-side --filename {}"
+        for:
+          - 'infra/flux-system/flux-instance/sops-age.sops.yaml'
+      - # Apply helmfile
+        cmd: helmfile --file {{ .helm_file }} apply --hide-notes --skip-diff-on-install --suppress-diff --suppress-secrets
+      - # Restore HA endpoint
+        task: kubectl:target-cilium
+      - # Check that all nodes are ready.
+        cmd: until kubectl wait nodes --for=condition=Ready=True --all --timeout=10m; do sleep 5; done
+
+
+  helm:infra:
+    desc: Bootstrap infra.
+    vars:
+      helm_file: '{{ .TALOS_DIR }}/bootstrap/helmfile.d/01-infra.yaml'
+    env:
+      INFRA_DIR: '{{ .ROOT_DIR }}/cluster/infra'
+      NODE_COUNT:
+        sh: talosctl config info --output json | jq --raw-output '.nodes | length'
+    preconditions:
+      - which sops helmfile kubectl talosctl
+      - test -f {{ .helm_file }}
+      - talosctl config info
+    interactive: true
+    cmds:
+      - # Apply helmfile
+        cmd: helmfile --file {{ .helm_file }} apply --hide-notes --skip-diff-on-install --suppress-diff --suppress-secrets
+
+  helm:flux:
+    desc: Bootstrap infra.
+    vars:
+      helm_file: '{{ .TALOS_DIR }}/bootstrap/helmfile.d/02-flux.yaml'
+    env:
+      INFRA_DIR: '{{ .ROOT_DIR }}/cluster/infra'
+      NODE_COUNT:
+        sh: talosctl config info --output json | jq --raw-output '.nodes | length'
+    preconditions:
+      - which sops helmfile kubectl talosctl
+      - test -f {{ .helm_file }}
+      - talosctl config info
+    interactive: true
+    cmds:
+      - # Apply helmfile
+        cmd: helmfile --file {{ .helm_file }} apply --hide-notes --skip-diff-on-install --suppress-diff --suppress-secrets
+
+
+  talhelper:secret:
+    desc: Generate the secret.
+    dir: '{{.TALOS_DIR}}'
+    internal: true
+    run: once
+    cmd: '[ -f talsecret.sops.yaml ] || talhelper gensecret | sops --filename-override talos/talsecret.sops.yaml --encrypt /dev/stdin > talsecret.sops.yaml'
+    preconditions:
+      - test -f {{.SOPS_CONFIG_FILE}}
+      - test -f {{.SOPS_AGE_KEY_FILE}}
+      - which talhelper sops

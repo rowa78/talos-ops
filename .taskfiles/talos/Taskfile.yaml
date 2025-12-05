@@ -1,0 +1,441 @@
+---
+version: "3"
+
+tasks:
+  # ============================================================================
+  # Konfiguration
+  # ============================================================================
+
+  config:generate-secret:
+    desc: Generiert Talos-Secrets (falls nicht vorhanden)
+    dir: '{{.TALOS_DIR}}'
+    preconditions:
+      - test -f {{.SOPS_CONFIG_FILE}}
+      - test -f {{.SOPS_AGE_KEY_FILE}}
+      - which talhelper sops
+    cmds:
+      - |
+        if [ ! -f talsecret.sops.yaml ]; then
+          echo "Generiere Talos-Secrets..."
+          talhelper gensecret | sops --encrypt --input-type yaml --output-type yaml /dev/stdin > talsecret.sops.yaml
+          echo "✅ Secrets erstellt: talsecret.sops.yaml"
+        else
+          echo "✅ Secrets existieren bereits"
+        fi
+
+  config:generate:
+    desc: Generiert Cluster-Konfigurationen aus talconfig.yaml
+    dir: '{{.TALOS_DIR}}'
+    deps:
+      - task: config:generate-secret
+    preconditions:
+      - test -f {{.TALOS_DIR}}/talconfig.yaml
+      - test -f {{.TALOS_DIR}}/talsecret.sops.yaml
+      - which talhelper sops
+    cmds:
+      - echo "Generiere Cluster-Konfigurationen..."
+      - talhelper genconfig
+      - echo "✅ Konfigurationen generiert in clusterconfig/"
+
+  config:validate:
+    desc: Validiert die Talos-Konfiguration
+    dir: '{{.TALOS_DIR}}'
+    preconditions:
+      - test -f {{.TALOS_DIR}}/talconfig.yaml
+      - which talhelper
+    cmds:
+      - talhelper genconfig --dry-run
+      - echo "✅ Konfiguration ist gültig"
+
+  config:show:
+    desc: Zeigt die generierte Konfiguration für einen Node [NODE=required]
+    dir: '{{.TALOS_DIR}}'
+    requires:
+      vars: [ NODE ]
+    preconditions:
+      - test -f {{.TALHELPER_CLUSTER_DIR}}/{{.TALOS_CLUSTER_NAME}}-{{.NODE}}.yaml
+      - which yq
+    cmds:
+      - yq eval '.' {{.TALHELPER_CLUSTER_DIR}}/{{.TALOS_CLUSTER_NAME}}-{{.NODE}}.yaml
+
+  # ============================================================================
+  # Bootstrap
+  # ============================================================================
+
+  bootstrap:init:
+    desc: Initialer Cluster-Bootstrap (apply config + bootstrap)
+    dir: '{{.TALOS_DIR}}'
+    vars:
+      TALOS_CONTROLLER:
+        sh: talosctl config info --output json 2>/dev/null | jq --raw-output '.endpoints[0]' || echo ""
+    preconditions:
+      - which talhelper sops jq talosctl
+      - test -f {{.SOPS_CONFIG_FILE}}
+      - test -f {{.SOPS_AGE_KEY_FILE}}
+      - test -f {{.TALOS_DIR}}/talconfig.yaml
+    cmds:
+      - echo "🚀 Starte Cluster-Bootstrap..."
+      - task: config:generate-secret
+      - task: config:generate
+      - |
+        if [ -z "$TALOS_CONTROLLER" ] || [ "$TALOS_CONTROLLER" = "null" ]; then
+          echo "⚠️  Keine Talos-Konfiguration gefunden. Verwende --insecure für initiales Setup"
+          talhelper gencommand apply --extra-flags="--insecure" | bash
+        else
+          echo "Wende Konfiguration an..."
+          talhelper gencommand apply | bash
+        fi
+      - echo "Warte auf Nodes..."
+      - |
+        if [ -n "$TALOS_CONTROLLER" ] && [ "$TALOS_CONTROLLER" != "null" ]; then
+          until talosctl get systeminformations.hardware.talos.dev -i -n $TALOS_CONTROLLER -o yaml &>/dev/null; do
+            echo "  Warte auf Node..."
+            sleep 5
+          done
+        fi
+      - echo "Bootstrappe Cluster..."
+      - until talhelper gencommand bootstrap | bash; do sleep 5; done
+      - task: bootstrap:kubeconfig
+      - echo "✅ Cluster erfolgreich gebootstrappt!"
+
+  bootstrap:kubeconfig:
+    desc: Generiert/regeneriert kubeconfig
+    dir: '{{.TALOS_DIR}}'
+    preconditions:
+      - test -f {{.TALOS_DIR}}/talconfig.yaml
+      - which talhelper
+    cmds:
+      - echo "Generiere kubeconfig..."
+      - until talhelper gencommand kubeconfig --extra-flags="{{.ROOT_DIR}} --force" | bash; do sleep 5; done
+      - echo "✅ kubeconfig generiert"
+
+  # ============================================================================
+  # Konfiguration anwenden
+  # ============================================================================
+
+  apply:all:
+    desc: Wendet Konfiguration auf alle Nodes an
+    dir: '{{.TALOS_DIR}}'
+    deps:
+      - task: config:generate
+    preconditions:
+      - which talhelper talosctl yq
+      - test -f "${TALOSCONFIG}"
+    vars:
+      CLUSTERCONFIG_FILES:
+        sh: ls {{.TALHELPER_CLUSTER_DIR}}/{{.TALOS_CLUSTER_NAME}}-*.yaml 2>/dev/null || echo ""
+    cmds:
+      - |
+        if [ -z "$CLUSTERCONFIG_FILES" ]; then
+          echo "❌ Keine Konfigurationsdateien gefunden. Führe 'task config:generate' aus."
+          exit 1
+        fi
+        for file in $CLUSTERCONFIG_FILES; do
+          HOSTNAME=$(yq '.machine.network.hostname' < "$file")
+          echo "Wende Konfiguration auf $HOSTNAME an..."
+          task: _apply-machineconfig
+            vars:
+              FILENAME: "$file"
+              HOSTNAME: "$HOSTNAME"
+        done
+      - echo "✅ Konfiguration auf alle Nodes angewendet"
+
+  apply:node:
+    desc: Wendet Konfiguration auf einen spezifischen Node an [NODE=required]
+    dir: '{{.TALOS_DIR}}'
+    deps:
+      - task: config:generate
+    preconditions:
+      - which talhelper talosctl yq
+      - test -f "${TALOSCONFIG}"
+    requires:
+      vars: [ NODE ]
+    vars:
+      FILE: '{{.TALHELPER_CLUSTER_DIR}}/{{.TALOS_CLUSTER_NAME}}-{{.NODE}}.yaml'
+    cmds:
+      - |
+        if [ ! -f "{{.FILE}}" ]; then
+          echo "❌ Konfigurationsdatei für {{.NODE}} nicht gefunden"
+          exit 1
+        fi
+      - task: _apply-machineconfig
+        vars:
+          FILENAME: "{{.FILE}}"
+          HOSTNAME: "{{.NODE}}"
+      - echo "Prüfe Node-Health..."
+      - talosctl --nodes {{.NODE}} health
+      - echo "✅ Konfiguration auf {{.NODE}} angewendet"
+
+  apply:dry-run:
+    desc: Dry-Run für alle Nodes (zeigt Änderungen ohne anzuwenden)
+    dir: '{{.TALOS_DIR}}'
+    deps:
+      - task: config:generate
+    preconditions:
+      - which talhelper talosctl yq
+      - test -f "${TALOSCONFIG}"
+    vars:
+      CLUSTERCONFIG_FILES:
+        sh: ls {{.TALHELPER_CLUSTER_DIR}}/{{.TALOS_CLUSTER_NAME}}-*.yaml 2>/dev/null || echo ""
+    cmds:
+      - |
+        for file in $CLUSTERCONFIG_FILES; do
+          HOSTNAME=$(yq '.machine.network.hostname' < "$file")
+          echo "Dry-Run für $HOSTNAME:"
+          talosctl apply-config --nodes "$HOSTNAME" --file "$file" --mode=auto --dry-run
+        done
+
+  apply:controlplane:
+    desc: Wendet Konfiguration nur auf Control-Plane-Nodes an
+    dir: '{{.TALOS_DIR}}'
+    deps:
+      - task: config:generate
+    preconditions:
+      - which talhelper talosctl yq
+      - test -f "${TALOSCONFIG}"
+    vars:
+      CLUSTERCONFIG_FILES:
+        sh: |
+          for file in {{.TALHELPER_CLUSTER_DIR}}/{{.TALOS_CLUSTER_NAME}}-*.yaml; do
+            if yq '.machine.controlplane' "$file" 2>/dev/null | grep -q "true"; then
+              echo "$file"
+            fi
+          done
+    cmds:
+      - |
+        for file in $CLUSTERCONFIG_FILES; do
+          HOSTNAME=$(yq '.machine.network.hostname' < "$file")
+          echo "Wende Konfiguration auf Control-Plane $HOSTNAME an..."
+          task: _apply-machineconfig
+            vars:
+              FILENAME: "$file"
+              HOSTNAME: "$HOSTNAME"
+        done
+
+  _apply-machineconfig:
+    internal: true
+    dir: '{{.TALOS_DIR}}'
+    desc: Wendet eine Talos machineConfig auf einen Node an
+    preconditions:
+      - which talosctl
+      - test -f "{{.FILENAME}}"
+    requires:
+      vars:
+        - HOSTNAME
+        - FILENAME
+    vars:
+      MODE: '{{.MODE | default "auto"}}'
+    cmds:
+      - talosctl apply-config
+        --nodes "{{.HOSTNAME}}"
+        --file "{{.FILENAME}}"
+        --mode="{{.MODE}}"
+        {{ if eq "true" .INSECURE }}--insecure{{ end }}
+        {{ if eq "true" .DRY_RUN }}--dry-run{{ end }}
+
+  # ============================================================================
+  # Upgrades
+  # ============================================================================
+
+  upgrade:talos:
+    desc: Upgradet Talos auf allen Nodes (sequenziell)
+    dir: '{{.TALOS_DIR}}'
+    deps:
+      - task: config:generate
+    preconditions:
+      - which talhelper talosctl yq
+      - test -f "${TALOSCONFIG}"
+    vars:
+      TALOS_VERSION:
+        sh: yq '.talosVersion' {{.TALOS_DIR}}/talenv.yaml
+      NODES:
+        sh: |
+          for file in {{.TALHELPER_CLUSTER_DIR}}/{{.TALOS_CLUSTER_NAME}}-*.yaml; do
+            yq '.machine.network.hostname' "$file" 2>/dev/null
+          done | grep -v "^null$" | grep -v "^$"
+    cmds:
+      - |
+        echo "🔄 Upgradiere Talos auf Version {{.TALOS_VERSION}}"
+        for node in {{.NODES}}; do
+          echo "Upgrade Node: $node"
+          task: upgrade:talos:node
+            vars:
+              NODE: "$node"
+          echo "Warte 30 Sekunden vor nächstem Node..."
+          sleep 30
+        done
+        echo "✅ Alle Nodes wurden upgegradet"
+
+  upgrade:talos:node:
+    desc: Upgradet Talos auf einem einzelnen Node [NODE=required]
+    dir: '{{.TALOS_DIR}}'
+    deps:
+      - task: config:generate
+    preconditions:
+      - which talhelper talosctl yq
+      - test -f "${TALOSCONFIG}"
+    requires:
+      vars: [ NODE ]
+    vars:
+      FILE: '{{.TALHELPER_CLUSTER_DIR}}/{{.TALOS_CLUSTER_NAME}}-{{.NODE}}.yaml'
+      TALOS_IMAGE:
+        sh: yq '.machine.install.image' "{{.FILE}}" || echo ""
+    cmds:
+      - |
+        if [ -z "$TALOS_IMAGE" ] || [ "$TALOS_IMAGE" = "null" ]; then
+          echo "❌ Konnte Talos-Image nicht ermitteln"
+          exit 1
+        fi
+        echo "Upgrade {{.NODE}} auf $TALOS_IMAGE..."
+        talhelper gencommand upgrade --node {{.NODE}} --extra-flags "--image='$TALOS_IMAGE' --timeout=10m" | bash
+        echo "Prüfe Node-Health..."
+        talosctl --nodes {{.NODE}} health
+        echo "✅ {{.NODE}} erfolgreich upgegradet"
+
+  upgrade:k8s:
+    desc: Upgradet Kubernetes (liest Version aus talenv.yaml)
+    dir: '{{.TALOS_DIR}}'
+    vars:
+      KUBERNETES_VERSION:
+        sh: yq '.kubernetesVersion' {{.TALOS_DIR}}/talenv.yaml
+    preconditions:
+      - talosctl config info
+      - test -f {{.TALOSCONFIG}}
+      - which talhelper talosctl yq
+    cmds:
+      - |
+        echo "🔄 Upgradete Kubernetes auf Version {{.KUBERNETES_VERSION}}"
+        talhelper gencommand upgrade-k8s --extra-flags "--to '{{.KUBERNETES_VERSION}}'" | bash
+        echo "✅ Kubernetes-Upgrade abgeschlossen"
+
+  upgrade:check:
+    desc: Prüft verfügbare Updates für Talos und Kubernetes
+    preconditions:
+      - which yq
+    cmds:
+      - |
+        CURRENT_TALOS=$(yq '.talosVersion' {{.TALOS_DIR}}/talenv.yaml)
+        CURRENT_K8S=$(yq '.kubernetesVersion' {{.TALOS_DIR}}/talenv.yaml)
+        echo "Aktuelle Versionen:"
+        echo "  Talos:     $CURRENT_TALOS"
+        echo "  Kubernetes: $CURRENT_K8S"
+        echo ""
+        echo "ℹ️  Prüfe https://github.com/siderolabs/talos/releases für neue Talos-Versionen"
+        echo "ℹ️  Prüfe https://kubernetes.io/releases/ für neue Kubernetes-Versionen"
+
+  # ============================================================================
+  # Status & Monitoring
+  # ============================================================================
+
+  status:cluster:
+    desc: Zeigt Cluster-Status (Nodes, Pods, etc.)
+    preconditions:
+      - test -f $KUBECONFIG
+      - which kubectl
+    cmds:
+      - echo "📊 Cluster-Status:"
+      - kubectl get nodes -o wide
+      - echo ""
+      - echo "📦 System-Pods:"
+      - kubectl get pods -A --field-selector=status.phase!=Running,status.phase!=Succeeded
+
+  status:nodes:
+    desc: Zeigt Status aller Talos-Nodes
+    preconditions:
+      - which talosctl
+      - test -f "${TALOSCONFIG}"
+    cmds:
+      - talosctl get nodes
+
+  status:node:
+    desc: Zeigt detaillierten Status eines Nodes [NODE=required]
+    preconditions:
+      - which talosctl
+      - test -f "${TALOSCONFIG}"
+    requires:
+      vars: [ NODE ]
+    cmds:
+      - echo "📊 Status für {{.NODE}}:"
+      - talosctl --nodes {{.NODE}} get nodes
+      - echo ""
+      - echo "💾 Ressourcen:"
+      - talosctl --nodes {{.NODE}} get resources
+      - echo ""
+      - echo "🔧 Services:"
+      - talosctl --nodes {{.NODE}} get services
+
+  status:health:
+    desc: Prüft Health aller Nodes
+    preconditions:
+      - which talosctl
+      - test -f "${TALOSCONFIG}"
+    vars:
+      NODES:
+        sh: |
+          for file in {{.TALHELPER_CLUSTER_DIR}}/{{.TALOS_CLUSTER_NAME}}-*.yaml; do
+            yq '.machine.network.hostname' "$file" 2>/dev/null
+          done | grep -v "^null$" | grep -v "^$"
+    cmds:
+      - |
+        for node in {{.NODES}}; do
+          echo "Prüfe $node..."
+          if talosctl --nodes "$node" health &>/dev/null; then
+            echo "  ✅ $node ist gesund"
+          else
+            echo "  ❌ $node hat Probleme"
+          fi
+        done
+
+  status:kubernetes:
+    desc: Zeigt Kubernetes-Komponenten-Status
+    preconditions:
+      - test -f $KUBECONFIG
+      - which kubectl
+    cmds:
+      - echo "🔍 Kubernetes-Komponenten:"
+      - kubectl get componentstatuses 2>/dev/null || kubectl get cs
+      - echo ""
+      - echo "📊 Node-Status:"
+      - kubectl get nodes
+      - echo ""
+      - echo "📦 Core-Pods:"
+      - kubectl get pods -n kube-system
+
+  # ============================================================================
+  # Wartung
+  # ============================================================================
+
+  maintenance:reset:
+    desc: Setzt Cluster zurück in Wartungsmodus (ZERSTÖRT CLUSTER!)
+    dir: '{{.TALOS_DIR}}'
+    prompt: ⚠️  Dies zerstört den Cluster und setzt alle Nodes zurück. Fortfahren?
+    preconditions:
+      - which talhelper
+    cmds:
+      - echo "🔄 Setze Cluster zurück..."
+      - talhelper gencommand reset --extra-flags="--reboot --system-labels-to-wipe STATE --system-labels-to-wipe EPHEMERAL --graceful=false --wait=false" | bash
+      - echo "✅ Cluster zurückgesetzt"
+
+  maintenance:reboot:
+    desc: Startet einen Node neu [NODE=required]
+    preconditions:
+      - which talosctl
+      - test -f "${TALOSCONFIG}"
+    requires:
+      vars: [ NODE ]
+    cmds:
+      - echo "🔄 Starte {{.NODE}} neu..."
+      - talosctl --nodes {{.NODE}} reboot
+      - echo "✅ {{.NODE}} wird neu gestartet"
+
+  maintenance:shutdown:
+    desc: Fährt einen Node herunter [NODE=required]
+    preconditions:
+      - which talosctl
+      - test -f "${TALOSCONFIG}"
+    requires:
+      vars: [ NODE ]
+    cmds:
+      - echo "⚠️  Fahre {{.NODE}} herunter..."
+      - talosctl --nodes {{.NODE}} shutdown
+      - echo "✅ {{.NODE}} wird heruntergefahren"

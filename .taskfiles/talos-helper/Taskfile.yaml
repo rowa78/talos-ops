@@ -1,0 +1,153 @@
+---
+version: "3"
+
+vars:
+  TALOS_DIR: '{{.ROOT_DIR}}/talos'
+  TALHELPER_CLUSTER_DIR: '{{.TALOS_DIR}}/clusterconfig'
+  TALOS_CLUSTER_NAME:
+    sh: yq '.clusterName' < '{{.TALOS_DIR}}/talconfig.yaml'
+
+tasks:
+  disks:
+    desc: Zeigt verfügbare Disks eines Nodes [NODE= oder IP=]
+    preconditions:
+      - talosctl config info
+      - which talosctl
+    vars:
+      TARGET: '{{.NODE | default .IP}}'
+    requires:
+      vars: [ TARGET ]
+    cmds:
+      - echo "💾 Verfügbare Disks auf {{.TARGET}}:"
+      - |
+        if ! talosctl get disks -n {{.TARGET}} &>/dev/null; then
+          echo "  ⚠️  Node nicht erreichbar oder keine Disks gefunden"
+        else
+          talosctl get disks -n {{.TARGET}} -o table || echo "  ⚠️  Fehler beim Abrufen der Disk-Informationen"
+        fi
+
+  interfaces:
+    desc: Zeigt alle Netzwerk-Interfaces eines Nodes [NODE= oder IP=]
+    preconditions:
+      - talosctl config info
+      - which talosctl yq
+    vars:
+      TARGET: '{{.NODE | default .IP}}'
+    requires:
+      vars: [ TARGET ]
+    cmds:
+      - echo "🌐 Netzwerk-Interfaces auf {{.TARGET}}:"
+      - |
+        talosctl get linkstatus -n {{.TARGET}} -o yaml | yq eval '.items[] | select(.spec.type == "ether") | "  \(.metadata.id): \(.spec.linkState) - \(.spec.hardwareAddr)"'
+
+  interfaces:up:
+    desc: Zeigt aktive Netzwerk-Interfaces eines Nodes [NODE= oder IP=]
+    preconditions:
+      - talosctl config info
+      - which talosctl yq
+    vars:
+      TARGET: '{{.NODE | default .IP}}'
+    requires:
+      vars: [ TARGET ]
+    cmds:
+      - echo "🌐 Aktive Netzwerk-Interfaces auf {{.TARGET}}:"
+      - |
+        talosctl get linkstatus -n {{.TARGET}} -o yaml | yq eval '.items[] | select(.spec.type == "ether") | select(.spec.linkState == "true") | "  \(.metadata.id): \(.spec.hardwareAddr)"'
+
+  hardware:
+    desc: Zeigt Hardware-Informationen eines Nodes [NODE= oder IP=]
+    preconditions:
+      - talosctl config info
+      - which talosctl yq
+    vars:
+      TARGET: '{{.NODE | default .IP}}'
+    requires:
+      vars: [ TARGET ]
+    cmds:
+      - echo "🖥️  Hardware-Informationen für {{.TARGET}}:"
+      - |
+        talosctl get systeminformations.hardware.talos.dev -n {{.TARGET}} -o yaml | yq eval '.spec.systemInformation | "  CPU: \(.cpuCount) Cores\n  Memory: \(.memoryTotal) Bytes\n  Machine: \(.machineType)"'
+
+  # ============================================================================
+  # Alle Nodes Varianten
+  # ============================================================================
+
+  disks:all:
+    desc: Zeigt verfügbare Disks aller Nodes
+    preconditions:
+      - talosctl config info
+      - which talosctl yq
+      - test -d {{.TALHELPER_CLUSTER_DIR}}
+    cmds:
+      - |
+        for file in {{.TALHELPER_CLUSTER_DIR}}/{{.TALOS_CLUSTER_NAME}}-*.yaml; do
+          # Extrahiere Hostname aus Dateinamen (z.B. rwcloud-master01.yaml -> master01)
+          node=$(basename "$file" .yaml | sed "s/^{{.TALOS_CLUSTER_NAME}}-//")
+          if [ -n "$node" ]; then
+            echo ""
+            echo "═══════════════════════════════════════════════════════════"
+            echo "Node: $node"
+            echo "═══════════════════════════════════════════════════════════"
+            task talos:helper:disks NODE="$node"
+          fi
+        done
+
+  interfaces:all:
+    desc: Zeigt alle Netzwerk-Interfaces aller Nodes
+    preconditions:
+      - talosctl config info
+      - which talosctl yq
+      - test -d {{.TALHELPER_CLUSTER_DIR}}
+    cmds:
+      - |
+        for file in {{.TALHELPER_CLUSTER_DIR}}/{{.TALOS_CLUSTER_NAME}}-*.yaml; do
+          # Extrahiere Hostname aus Dateinamen (z.B. rwcloud-master01.yaml -> master01)
+          node=$(basename "$file" .yaml | sed "s/^{{.TALOS_CLUSTER_NAME}}-//")
+          if [ -n "$node" ]; then
+            echo ""
+            echo "═══════════════════════════════════════════════════════════"
+            echo "Node: $node"
+            echo "═══════════════════════════════════════════════════════════"
+            task talos:helper:interfaces NODE="$node"
+          fi
+        done
+
+  interfaces:up:all:
+    desc: Zeigt aktive Netzwerk-Interfaces aller Nodes
+    preconditions:
+      - talosctl config info
+      - which talosctl yq
+      - test -d {{.TALHELPER_CLUSTER_DIR}}
+    cmds:
+      - |
+        for file in {{.TALHELPER_CLUSTER_DIR}}/{{.TALOS_CLUSTER_NAME}}-*.yaml; do
+          # Extrahiere Hostname aus Dateinamen (z.B. rwcloud-master01.yaml -> master01)
+          node=$(basename "$file" .yaml | sed "s/^{{.TALOS_CLUSTER_NAME}}-//")
+          if [ -n "$node" ]; then
+            echo ""
+            echo "═══════════════════════════════════════════════════════════"
+            echo "Node: $node"
+            echo "═══════════════════════════════════════════════════════════"
+            task talos:helper:interfaces:up NODE="$node"
+          fi
+        done
+
+  hardware:all:
+    desc: Zeigt Hardware-Informationen aller Nodes
+    preconditions:
+      - talosctl config info
+      - which talosctl yq
+      - test -d {{.TALHELPER_CLUSTER_DIR}}
+    cmds:
+      - |
+        for file in {{.TALHELPER_CLUSTER_DIR}}/{{.TALOS_CLUSTER_NAME}}-*.yaml; do
+          # Extrahiere Hostname aus Dateinamen (z.B. rwcloud-master01.yaml -> master01)
+          node=$(basename "$file" .yaml | sed "s/^{{.TALOS_CLUSTER_NAME}}-//")
+          if [ -n "$node" ]; then
+            echo ""
+            echo "═══════════════════════════════════════════════════════════"
+            echo "Node: $node"
+            echo "═══════════════════════════════════════════════════════════"
+            task talos:helper:hardware NODE="$node"
+          fi
+        done

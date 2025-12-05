@@ -1,0 +1,38 @@
+# Kubernetes/Talos generierte Dateien
+kubeconfig
+talosconfig
+*.kubeconfig
+
+# Generierte Cluster-Konfigurationen (im talos Ordner)
+talos/clusterconfig/*.yaml
+talos/clusterconfig/talosconfig
+
+# SOPS Schlüsseldateien (nicht die verschlüsselten Dateien selbst)
+*.age
+*.age-key
+*.key
+*.pem
+SOPS_AGE_KEY_FILE
+
+# Temporäre und Editor-Dateien
+*.swp
+*.swo
+*~
+.DS_Store
+.idea/
+.vscode/
+*.tmp
+*.bak
+*.log
+
+# Taskfile Cache
+.task/
+
+# Lokale Umgebungsvariablen
+.env
+.env.local
+
+# Backup-Dateien
+*.backup
+*.old
+
