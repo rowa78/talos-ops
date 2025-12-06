@@ -4,3 +4,7 @@ rwcloud-master03.yaml
 talosconfig
 rwcloud-pi-worker01.yaml
 rwcloud-vm-worker01.yaml
+rwcloud-stardust.yaml
+rwcloud-mars.yaml
+rwcloud-luna.yaml
+rwcloud-terra.yaml

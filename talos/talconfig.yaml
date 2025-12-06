@@ -3,7 +3,7 @@
 clusterName: rwcloud
 talosVersion: ${talosVersion}
 kubernetesVersion: ${kubernetesVersion}
-endpoint: https://192.168.0.230:6443
+endpoint: https://192.168.0.200:6443
 # enable workers on your control plane nodes
 allowSchedulingOnControlPlanes: true
 clusterPodNets:
@@ -17,40 +17,12 @@ clusterSvcNets:
 #     # Patches go here
 
 nodes:
-  - hostname: master01
+  - hostname: terra
     controlPlane: true
-    ipAddress: 192.168.0.196
-    installDisk: /dev/sda
-    nodeLabels:
-      type: proxmox
-    nodeTaints:
-      node-role.kubernetes.io/control-plane: "true:NoSchedule"
-    nameservers:
-      - 192.168.0.1
-    machineSpec:
-      mode: nocloud
-      arch: amd64
-    schematic:      
-      customization:        
-        systemExtensions:
-          officialExtensions:
-            - siderolabs/qemu-guest-agent            
-    # Set up the control plane nodes to provide a vip for the kubernetes api server
-    # Documentation @ https://www.talos.dev/v1.9/talos-guides/network/vip/
-    # Default setup is to use predictable interface names: https://www.talos.dev/v1.9/talos-guides/network/predictable-interface-names/
-    # Different devices might need a different interface name: https://www.talos.dev/v1.9/talos-guides/network/device-selector/
-    networkInterfaces:
-      - interface: eth0
-        dhcp: true
-        vip:
-          ip: 192.168.0.230
-
-  - hostname: master02
-    controlPlane: true
-    ipAddress: 192.168.0.100  
-    installDisk: /dev/sda
-    nodeLabels:
-      type: raspberrypi
+    ipAddress: 192.168.0.201
+    installDisk: /dev/nvme0n1
+    #nodeLabels:
+    #  type: proxmox
     nameservers:
       - 192.168.0.1
     machineSpec:
@@ -62,42 +34,41 @@ nodes:
           officialExtensions:
             - siderolabs/iscsi-tools
             - siderolabs/util-linux-tools   
+    # Set up the control plane nodes to provide a vip for the kubernetes api server
+    # Documentation @ https://www.talos.dev/v1.9/talos-guides/network/vip/
+    # Default setup is to use predictable interface names: https://www.talos.dev/v1.9/talos-guides/network/predictable-interface-names/
+    # Different devices might need a different interface name: https://www.talos.dev/v1.9/talos-guides/network/device-selector/
+    networkInterfaces:
+      - interface: eno1
+        dhcp: true
+        vip:
+          ip: 192.168.0.200
     userVolumes: &user-volumes
       - name: longhorn
         provisioning:
           diskSelector:
-            match: disk.transport == "usb"
+            match: disk.dev_path == "/dev/nvme0n1"
+          minSize: 100GB
+          grow: true
+      - name: longhorn2
+        provisioning:
+          diskSelector:
+            match: disk.dev_path == "/dev/nvme1n1"
           minSize: 100GB
           grow: true
     volumes: &volumes
       - name: EPHEMERAL
         provisioning:
           diskSelector:
-            match: disk.transport == "usb"
+            match: disk.dev_path == "/dev/nvme0n1"
           minSize: 50GiB
-          maxSize: 50GiB  
-    # Set up the control plane nodes to provide a vip for the kubernetes api server
-    # Documentation @ https://www.talos.dev/v1.9/talos-guides/network/vip/
-    # Default setup is to use predictable interface names: https://www.talos.dev/v1.9/talos-guides/network/predictable-interface-names/
-    # Different devices might need a different interface name: https://www.talos.dev/v1.9/talos-guides/network/device-selector/
-    networkInterfaces:
-      - interface: end0
-        dhcp: true
-        vip:
-          ip: 192.168.0.230
-    patches:
-      - "@./patches/pi/sysctl-ipv6.yaml"
-
-  - hostname: master03
+          maxSize: 50GiB
+  - hostname: mars
     controlPlane: true
-    ipAddress: 192.168.0.102
-    nodeLabels:
-      type: raspberrypi
-    machine:
-      sysctls:
-        net.ipv6.conf.all.accept_ra: "2"
-        net.ipv6.conf.default.accept_ra: "2"
-    installDisk: /dev/sda
+    ipAddress: 192.168.0.202
+    installDisk: /dev/nvme0n1
+    #nodeLabels:
+    #  type: proxmox
     nameservers:
       - 192.168.0.1
     machineSpec:
@@ -109,42 +80,41 @@ nodes:
           officialExtensions:
             - siderolabs/iscsi-tools
             - siderolabs/util-linux-tools   
-    userVolumes: &user-volumes
-      - name: longhorn
-        provisioning:
-          diskSelector:
-            match: disk.transport == "usb"
-          minSize: 100GB
-          grow: true
-    volumes: &volumes
-      - name: EPHEMERAL
-        provisioning:
-          diskSelector:
-            match: disk.transport == "usb"
-          minSize: 50GiB
-          maxSize: 50GiB  
     # Set up the control plane nodes to provide a vip for the kubernetes api server
     # Documentation @ https://www.talos.dev/v1.9/talos-guides/network/vip/
     # Default setup is to use predictable interface names: https://www.talos.dev/v1.9/talos-guides/network/predictable-interface-names/
     # Different devices might need a different interface name: https://www.talos.dev/v1.9/talos-guides/network/device-selector/
     networkInterfaces:
-      - interface: end0
+      - interface: eno1
         dhcp: true
         vip:
-          ip: 192.168.0.230
-    patches:
-      - "@./patches/pi/sysctl-ipv6.yaml"
-
-  - hostname: pi-worker01
-    controlPlane: false
-    ipAddress: 192.168.0.149
-    nodeLabels:
-      type: raspberrypi
-    machine:
-      sysctls:
-        net.ipv6.conf.all.accept_ra: "2"
-        net.ipv6.conf.default.accept_ra: "2"
-    installDisk: /dev/sda
+          ip: 192.168.0.200
+    userVolumes: &user-volumes
+      - name: longhorn
+        provisioning:
+          diskSelector:
+            match: disk.dev_path == "/dev/nvme0n1"
+          minSize: 100GB
+          grow: true
+      - name: longhorn2
+        provisioning:
+          diskSelector:
+            match: disk.dev_path == "/dev/nvme1n1"
+          minSize: 100GB
+          grow: true
+    volumes: &volumes
+      - name: EPHEMERAL
+        provisioning:
+          diskSelector:
+            match: disk.dev_path == "/dev/nvme0n1"
+          minSize: 50GiB
+          maxSize: 50GiB
+  - hostname: luna
+    controlPlane: true
+    ipAddress: 192.168.0.203
+    installDisk: /dev/nvme0n1
+    #nodeLabels:
+    #  type: proxmox
     nameservers:
       - 192.168.0.1
     machineSpec:
@@ -156,57 +126,26 @@ nodes:
           officialExtensions:
             - siderolabs/iscsi-tools
             - siderolabs/util-linux-tools   
+    # Set up the control plane nodes to provide a vip for the kubernetes api server
+    # Documentation @ https://www.talos.dev/v1.9/talos-guides/network/vip/
+    # Default setup is to use predictable interface names: https://www.talos.dev/v1.9/talos-guides/network/predictable-interface-names/
+    # Different devices might need a different interface name: https://www.talos.dev/v1.9/talos-guides/network/device-selector/
+    networkInterfaces:
+      - interface: enp4s0
+        dhcp: true
+        vip:
+          ip: 192.168.0.200
     userVolumes: &user-volumes
       - name: longhorn
         provisioning:
           diskSelector:
-            match: disk.transport == "usb"
+            match: disk.dev_path == "/dev/nvme0n1"
           minSize: 100GB
-          grow: true
+          grow: true      
     volumes: &volumes
       - name: EPHEMERAL
         provisioning:
           diskSelector:
-            match: disk.transport == "usb"
+            match: disk.dev_path == "/dev/nvme0n1"
           minSize: 50GiB
-          maxSize: 50GiB  
-    # Set up the control plane nodes to provide a vip for the kubernetes api server
-    # Documentation @ https://www.talos.dev/v1.9/talos-guides/network/vip/
-    # Default setup is to use predictable interface names: https://www.talos.dev/v1.9/talos-guides/network/predictable-interface-names/
-    # Different devices might need a different interface name: https://www.talos.dev/v1.9/talos-guides/network/device-selector/
-    networkInterfaces:
-      - interface: end0
-        dhcp: true
-    patches:
-      - "@./patches/pi/sysctl-ipv6.yaml"
-
-  - hostname: vm-worker01
-    controlPlane: false
-    ipAddress: 192.168.0.179
-    installDisk: /dev/sdb
-    nodeLabels:
-      type: proxmox
-    nameservers:
-      - 192.168.0.1
-    machineSpec:
-      mode: nocloud
-      arch: amd64
-    schematic:      
-      customization:        
-        systemExtensions:
-          officialExtensions:
-            - siderolabs/qemu-guest-agent            
-    # Set up the control plane nodes to provide a vip for the kubernetes api server
-    # Documentation @ https://www.talos.dev/v1.9/talos-guides/network/vip/
-    # Default setup is to use predictable interface names: https://www.talos.dev/v1.9/talos-guides/network/predictable-interface-names/
-    # Different devices might need a different interface name: https://www.talos.dev/v1.9/talos-guides/network/device-selector/
-    networkInterfaces:
-      - interface: eth0
-        dhcp: true
-    userVolumes: 
-      - name: longhorn
-        provisioning:
-          diskSelector:
-            match: disk.transport == "usb"
-          minSize: 100GB
-          grow: true  
+          maxSize: 50GiB
